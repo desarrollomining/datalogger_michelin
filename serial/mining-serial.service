@@ -1,0 +1,15 @@
+[Unit]
+Description=Mining Serial Aspersores Datalogger Service
+ConditionPathExists=|/usr/bin
+After=network.target
+
+[Service]
+User=root
+ExecStart=/usr/bin/python3 /srv/datalogger_michelin/serial
+
+# Restart every >2 seconds to avoid StartLimitInterval failure
+RestartSec=3
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
