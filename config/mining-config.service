@@ -1,0 +1,17 @@
+[Unit]
+Description=MMR Autoupdate Config Service
+ConditionPathExists=|/usr/bin
+After=network.target
+
+[Service]
+User=root
+ExecStartPre=/usr/bin/bash -c 'until [ -s /dev/shm/credentials.json ]; do sleep 1; done'
+ExecStart=/usr/bin/python3 /srv/datalogger_michelin/config/__main__.py --update_config
+
+# Restart every hour
+Restart=always
+RestartSec=3600s
+
+
+[Install]
+WantedBy=multi-user.target

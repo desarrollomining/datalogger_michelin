@@ -1,0 +1,18 @@
+[Unit]
+Description=Monitor Service
+ConditionPathExists=|/usr/bin
+After=network.target
+
+[Service]
+User=root
+ExecStart=/usr/bin/python3 /srv/datalogger_michelin/monitor
+
+# Restart every >2 seconds to avoid StartLimitInterval failure
+
+# Restart every 4 hour
+Restart=always
+RestartSec=4h
+
+
+[Install]
+WantedBy=multi-user.target

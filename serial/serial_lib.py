@@ -6,12 +6,11 @@ from lib.utils import Utils
 import re
 
 class SerialLib(Utils):
-    def __init__(self, usbdevnode, level_curve, baudrate: int = 115200, log_id = "SERIAL") -> None:
+    def __init__(self, usbdevnode, baudrate: int = 115200, log_id = "SERIAL") -> None:
         self.usbdevnode = usbdevnode
         self.baudrate = baudrate
         self.timeout = 0.5
         self.log_id = log_id
-        self.v_min, self.v_max = level_curve 
         self.last_timestamp = time()
         
         threading.Thread(target = self.connect).start()
