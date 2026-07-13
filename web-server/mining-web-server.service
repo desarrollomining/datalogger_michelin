@@ -5,7 +5,7 @@ After=network.target
 
 [Service]
 User=root
-ExecStart=/usr/bin/python3 /srv/datalogger_michelin/web-server
+ExecStart=/usr/bin/python3 /srv/datalogger_michelin/web-server/__main__.py
 
 # Restart every >2 seconds to avoid StartLimitInterval failure
 RestartSec=3

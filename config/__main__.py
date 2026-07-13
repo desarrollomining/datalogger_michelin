@@ -36,6 +36,9 @@ class Config(Utils):
                 "LOCATION": {
                     "VEHICLE": "",
                     "WHEEL": ""
+                },
+                "SERIAL": {
+                    "NUM_SENSOR": 50
                 }
             }
             

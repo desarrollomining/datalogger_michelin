@@ -1,5 +1,5 @@
 [Unit]
-Description=Mining Serial Aspersores Datalogger Service
+Description=Mining Serial Neumáticos Datalogger Service
 ConditionPathExists=|/usr/bin
 After=network.target
 
