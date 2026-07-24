@@ -7,17 +7,13 @@ sys.path.append('/srv/datalogger_michelin/')
 from lib.utils import Utils
 
 class Nema(Utils):
-    def __init__(self, step_pin=18, dir_pin=23, trig_der=5, echo_der=6, trig_izq=13, echo_izq=19, log_id="NEMA"):
+    def __init__(self, step_pin=18, dir_pin=23, sen_der=5, sen_izq=6, log_id="NEMA"):
         self.log_id = log_id
         self.STEP = step_pin
         self.DIR = dir_pin
-        self.TRIG_DER = trig_der
-        self.ECHO_DER = echo_der
-        self.TRIG_IZQ = trig_izq
-        self.ECHO_IZQ = echo_izq
+        self.SEN_DER = sen_der
+        self.SEN_IZQ = sen_izq
         
-        self.DIST_BLOQUEO = 6
-        self.DIST_LIBRE = 10
         self.FRECUENCIA_MOTOR = 800
         
         self.bloqueo_der = False
@@ -34,15 +30,12 @@ class Nema(Utils):
     def _configurar_gpio(self):
         lgpio.gpio_claim_output(self.chip, self.STEP)
         lgpio.gpio_claim_output(self.chip, self.DIR)
-        lgpio.gpio_claim_output(self.chip, self.TRIG_DER)
-        lgpio.gpio_claim_input(self.chip, self.ECHO_DER)
-        lgpio.gpio_claim_output(self.chip, self.TRIG_IZQ)
-        lgpio.gpio_claim_input(self.chip, self.ECHO_IZQ)
+
+        lgpio.gpio_claim_input(self.chip, self.SEN_DER)
+        lgpio.gpio_claim_input(self.chip, self.SEN_IZQ)
 
         lgpio.gpio_write(self.chip, self.STEP, 0)
         lgpio.gpio_write(self.chip, self.DIR, 0)
-        lgpio.gpio_write(self.chip, self.TRIG_DER, 0)
-        lgpio.gpio_write(self.chip, self.TRIG_IZQ, 0)
             
     def set_motor(self, nuevo_estado):
         if nuevo_estado == self.estado_motor:
@@ -60,63 +53,13 @@ class Nema(Utils):
         else:
             lgpio.tx_pwm(self.chip, self.STEP, 100, 0)
             lgpio.gpio_write(self.chip, self.STEP, 0)
-            
-    def medir_distancia(self, trig, echo):
-        lgpio.gpio_write(self.chip, trig, 0)
-        time.sleep(0.000003)
-        lgpio.gpio_write(self.chip, trig, 1)
-        time.sleep(0.00001)
-        lgpio.gpio_write(self.chip, trig, 0)
-
-        timeout = time.time() + 0.03
-        while lgpio.gpio_read(self.chip, echo) == 0:
-            if time.time() > timeout: return 999
-
-        inicio = time.time()
-        timeout = time.time() + 0.03
-        while lgpio.gpio_read(self.chip, echo) == 1:
-            if time.time() > timeout: return 999
-
-        fin = time.time()
-        return (fin - inicio) * 34300 / 2
-    
-    def _actualizar_bloqueo(self, distancia, bloqueo_actual, cont_bloq, cont_libre):
-        if distancia == 999:
-            cont_bloq = 0
-            if bloqueo_actual:
-                cont_libre += 1
-                if cont_libre >= 8: bloqueo_actual = False
-            return bloqueo_actual, cont_bloq, cont_libre
-
-        if 0 < distancia <= self.DIST_BLOQUEO:
-            cont_bloq += 1
-            cont_libre = 0
-            if cont_bloq >= 2: bloqueo_actual = True
-        elif distancia > self.DIST_LIBRE:
-            cont_libre += 1
-            cont_bloq = 0
-            if cont_libre >= 5: bloqueo_actual = False
-        else:
-            cont_bloq = 0
-
-        return bloqueo_actual, cont_bloq, cont_libre
     
     def tarea_sensores(self):
-        cont_bloq_der, cont_libre_der = 0, 0
-        cont_bloq_izq, cont_libre_izq = 0, 0
         aviso_der, aviso_izq = False, False
 
         while not self.salir:
-            der = self.medir_distancia(self.TRIG_DER, self.ECHO_DER)
-            time.sleep(0.03)
-            izq = self.medir_distancia(self.TRIG_IZQ, self.ECHO_IZQ)
-
-            self.bloqueo_der, cont_bloq_der, cont_libre_der = self._actualizar_bloqueo(
-                der, self.bloqueo_der, cont_bloq_der, cont_libre_der
-            )
-            self.bloqueo_izq, cont_bloq_izq, cont_libre_izq = self._actualizar_bloqueo(
-                izq, self.bloqueo_izq, cont_bloq_izq, cont_libre_izq
-            )
+            self.bloqueo_der = bool(lgpio.gpio_read(self.chip, self.SEN_DER))
+            self.bloqueo_izq = bool(lgpio.gpio_read(self.chip, self.SEN_IZQ))
 
             if self.bloqueo_der and not aviso_der:
                 self.log("DETENIDO: sensor derecho detectó obstáculo")

@@ -1,11 +1,13 @@
 import threading
+import struct
 from serial import Serial
 from time import time, sleep
 from lib.utils import Utils
 
 class SerialLib(Utils):
-    def __init__(self, num_sensores, baudrate: int = 9600, log_id: str = "SERIAL") -> None:
+    def __init__(self, num_sensores, baudrate: int = 9600, port: str = "/dev/serial0", log_id: str = "SERIAL") -> None:
         self.baudrate = baudrate
+        self.port = port
         self.timeout = 0.5
         self.log_id = log_id
         self.last_timestamp = time()
@@ -16,7 +18,6 @@ class SerialLib(Utils):
         self.num_sensores = num_sensores
         self.direcciones_sensores = [0x41 + i for i in range(self.num_sensores)]
         
-        # Volatiles para respuestas síncronas/esperas
         self.ultimo_comando_enviado = None 
         self.ultima_respuesta = None
         self.evento_respuesta = threading.Event()
@@ -26,9 +27,11 @@ class SerialLib(Utils):
     def connect(self) -> None:
         """Establece la conexión serial con el dispositivo."""
         try:
-            devnode = self.usbdevnode.get_devnode()
-            self.log(f"Intentando conectar al puerto serial: {devnode}")
-            self.serial_module = Serial(devnode, self.baudrate, timeout=self.timeout)
+            self.log(f"Intentando conectar al puerto serial: {self.port}")
+            self.serial_module = Serial(self.port, self.baudrate, timeout=self.timeout)
+            
+            self.serial_module.reset_input_buffer()
+            self.serial_module.reset_output_buffer()
             
             self.read_loop()
         except Exception as Ex:
@@ -63,30 +66,6 @@ class SerialLib(Utils):
         except Exception as Ex:
             self.log(f"Error al enviar comando: {Ex}")
 
-
-    def iniciar_monitoreo_global(self) -> None:
-        """Arranca las mediciones en todos los sensores de forma secuencial."""
-        with self.bus_lock:
-            self.log("Iniciando monitoreo en todos los sensores...")
-            for dir_sensor in self.direcciones_sensores:
-                self.enviar_comando(dir_sensor, 0x03)
-                sleep(0.05)
-
-    def detener_monitoreo_global(self) -> None:
-        """Pausa las mediciones en todos los sensores de forma secuencial."""
-        with self.bus_lock:
-            self.log("Deteniendo monitoreo en todos los sensores...")
-            for dir_sensor in self.direcciones_sensores:
-                self.enviar_comando(dir_sensor, 0x04)
-                sleep(0.05)
-
-    def borrar_datos_global(self) -> None:
-        """Borra los datos de todos los sensores al mismo tiempo usando Broadcast (0xFF)."""
-        with self.bus_lock:
-            self.log("Enviando orden de borrado global (Broadcast)...")
-            self.enviar_comando(0xFF, 0x08)
-            sleep(0.2)
-
     def revisar_estado_sensores(self) -> dict:
         """Consulta el estado (0x01) de cada sensor registrado en el sistema."""
         estados = {}
@@ -98,6 +77,29 @@ class SerialLib(Utils):
                 else:
                     estados[hex(dir_sensor)] = "TIMEOUT/DESCONECTADO"
         return estados
+    
+    def borrar_datos_local(self, direccion_sensor: int) -> None:
+        """Comando 0x02: Borra la EEPROM local de un nodo."""
+        with self.bus_lock:
+            self.log(f"Borrando datos locales del sensor {hex(direccion_sensor)}...")
+            self.enviar_comando(direccion_sensor, 0x02)
+            sleep(0.05)
+            
+    def iniciar_monitoreo_global(self) -> None:
+        """Arranca las mediciones en todos los sensores de forma secuencial."""
+        with self.bus_lock:
+            self.log("Iniciando monitoreo en todos los sensores...")
+            for dir_sensor in self.direcciones_sensores:
+                self.enviar_comando(dir_sensor, 0x03)
+                sleep(0.05)
+                
+    def detener_monitoreo_global(self) -> None:
+        """Pausa las mediciones en todos los sensores de forma secuencial."""
+        with self.bus_lock:
+            self.log("Deteniendo monitoreo en todos los sensores...")
+            for dir_sensor in self.direcciones_sensores:
+                self.enviar_comando(dir_sensor, 0x04)
+                sleep(0.05)
 
     def consultar_cantidad_datos(self, direccion_sensor: int) -> int:
         """Pregunta a un sensor específico cuántos datos tiene guardados (uint16)."""
@@ -106,6 +108,23 @@ class SerialLib(Utils):
             if self.evento_respuesta.wait(timeout=0.6) and self.ultima_respuesta:
                 return self.ultima_respuesta.get("cantidad_datos", 0)
             return 0
+    
+    def leer_dato_especifico(self, direccion_sensor: int, indice: int) -> int:
+        """Comando 0x06: Lee una posición específica. Devuelve valor o código de error (0xFFFF / 0xE001)."""
+        h_idx = (indice >> 8) & 0xFF
+        l_idx = indice & 0xFF
+        with self.bus_lock:
+            self.enviar_comando(direccion_sensor, 0x06, h_idx, l_idx)
+            if self.evento_respuesta.wait(timeout=0.6) and self.ultima_respuesta:
+                return self.ultima_respuesta.get("distancia_mm", 0xFFFF)
+            return 0xFFFF
+    
+    def borrar_datos_global(self) -> None:
+        """Borra los datos de todos los sensores al mismo tiempo usando Broadcast (0xFF)."""
+        with self.bus_lock:
+            self.log("Enviando orden de borrado global (Broadcast)...")
+            self.enviar_comando(0xFF, 0x08)
+            sleep(0.2)
 
     def reiniciar_sensor(self, direccion_sensor: int) -> None:
         """Realiza un Soft Reset (0x09) a un sensor específico."""
@@ -151,6 +170,25 @@ class SerialLib(Utils):
                 sleep(0.02)
                 
         return todos_los_datos
+    
+    def configurar_umbral_float(self, direccion_sensor: int, valor_float: float) -> bool:
+        """Comando 0x11: Configura umbral de distancia para sensores ultrasónicos."""
+        bytes_float = struct.pack('>f', valor_float)
+        b3, b2, b1, b0 = bytes_float[0], bytes_float[1], bytes_float[2], bytes_float[3]
+        
+        with self.bus_lock:
+            self.enviar_comando(direccion_sensor, 0x11, b3, b2, b1, b0)
+            if self.evento_respuesta.wait(timeout=0.6) and self.ultima_respuesta:
+                return self.ultima_respuesta.get("estado") == 0x01
+            return False
+        
+    def consultar_distancia_actual(self, direccion_sensor: int):
+        """Comando 0x12: Consulta la medición actual en vivo en formato float (cm ultrasónico / mm ToF)."""
+        with self.bus_lock:
+            self.enviar_comando(direccion_sensor, 0x12)
+            if self.evento_respuesta.wait(timeout=0.6) and self.ultima_respuesta:
+                return self.ultima_respuesta.get("distancia_float")
+            return None
 
     def read_loop(self) -> None:
         while True:
@@ -201,21 +239,35 @@ class SerialLib(Utils):
                     key = "cantidad_datos" if cmd_res == 0x05 else "distancia_mm"
                     self.ultima_respuesta = {key: valor}
 
-            elif cmd_res in [0x07, 0x10]:
-                cant_bytes = self.serial_module.read(2)
-                if len(cant_bytes) < 2: return
-                
-                cantidad_datos = (cant_bytes[0] << 8) | cant_bytes[1]
-                bytes_restantes = (cantidad_datos * 2) + 1
-                datos_raw = self.serial_module.read(bytes_restantes)
-                
-                trama_completa = header + cant_bytes + datos_raw
+            elif cmd_res == 0x10:
+                primer_byte = self.serial_module.read(1)
+                if len(primer_byte) < 1: return
+
+                if primer_byte[0] == 0xEE:
+                    cks = self.serial_module.read(1)
+                    trama_completa = header + primer_byte + cks
+                    if self._verificar_cks(trama_completa):
+                        self.ultima_respuesta = {"error": 0xEE, "valores": []}
+                else:
+                    segundo_byte = self.serial_module.read(1)
+                    if len(segundo_byte) < 1: return
+
+                    cant_bytes = primer_byte + segundo_byte
+                    cantidad_datos = (cant_bytes[0] << 8) | cant_bytes[1]
+                    bytes_restantes = (cantidad_datos * 2) + 1
+                    datos_raw = self.serial_module.read(bytes_restantes)
+
+                    trama_completa = header + cant_bytes + datos_raw
+                    if self._verificar_cks(trama_completa):
+                        lista_valores = [(datos_raw[i] << 8) | datos_raw[i+1] for i in range(0, cantidad_datos * 2, 2)]
+                        self.ultima_respuesta = {"cantidad": cantidad_datos, "valores": lista_valores}
+            
+            elif cmd_res == 0x12:
+                cuerpo = self.serial_module.read(5)
+                trama_completa = header + cuerpo
                 if self._verificar_cks(trama_completa):
-                    lista_valores = []
-                    for i in range(0, cantidad_datos * 2, 2):
-                        val = (datos_raw[i] << 8) | datos_raw[i+1]
-                        lista_valores.append(val)
-                    self.ultima_respuesta = {"cantidad": cantidad_datos, "valores": lista_valores}
+                    val_float = struct.unpack('>f', cuerpo[0:4])[0]
+                    self.ultima_respuesta = {"distancia_float": val_float}
 
             if self.ultima_respuesta:
                 data_emit = {"direccion": header[0], "comando": hex(cmd_res), **self.ultima_respuesta}

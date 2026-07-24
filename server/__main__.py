@@ -3,6 +3,7 @@ import socket
 import threading
 from time import sleep, time
 import sys
+import os
 import numpy as np
 from queue import Queue, Empty
 import pandas as pd
@@ -11,11 +12,11 @@ sys.path.append('/srv/datalogger_michelin/')
 from lib.utils import Utils
 from database.models import Database
 
+CONFIG_PATH = "/srv/datalogger_michelin/config_michelin.json"
+
 class Server(Utils):
-    def __init__(self, ip, port, vehicle, wheel, log_id="SERVER"):
+    def __init__(self, ip, port,log_id="SERVER"):
         self.log_id = log_id
-        self.vehicle = vehicle
-        self.wheel = wheel
 
         self.local_ip = ip
         self.local_port = port
@@ -42,13 +43,18 @@ class Server(Utils):
         
         self.database = Database()
 
-        threading.Thread(
-            target=self.read_client_data
-        ).start()
-
-        threading.Thread(
-            target=self.serial_worker
-        ).start()
+        threading.Thread(target=self.read_client_data).start()
+        threading.Thread(target=self.serial_worker).start()
+        
+    def get_location(self):
+        """Obtiene valores de vehicle y wheel dinámicamente"""
+        try: 
+            if os.path.exists(CONFIG_PATH):
+                with open(CONFIG_PATH, 'r') as f:
+                    config = json.load(f)
+                    return config["LOCATION"]["VEHICLE"], config["LOCATION"]["WHEEL"]
+        except:
+            self.traceback()
 
     def read_client_data(self):
         """Recibe mensajes UDP y los mete en la cola"""
@@ -89,8 +95,10 @@ class Server(Utils):
                 self.log("Matriz recibida vacía")
                 return
 
+            vehicle, wheel = self.get_location()
+
             raw_json_str = json.dumps(df_raw.to_dict(orient='records'))
-            self.database.insert_raw_data(raw_json_str, self.vehicle, self.wheel)
+            self.database.insert_raw_data(raw_json_str, vehicle, wheel)
             
             df_processed = df_raw.copy()
             sensor_cols = [col for col in df_processed.columns]

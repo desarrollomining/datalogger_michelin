@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+import sys 
+import json
+
+sys.path.append('/srv/datalogger_michelin/')
+from seriallib.serial_lib import SerialLib
+
+CONFIG_PATH = '/srv/datalogger_michelin/config_michelin.json'
+
+def load_config():
+    with open(CONFIG_PATH, "r") as f:
+        return json.load(f)
+
+def save_config(config):
+    with open(CONFIG_PATH, "w") as f:
+        json.dump(config, f, indent=4)
+
+def show_status(config):
+    threshold = config["SERIAL"]["THRESHOLD"]
+    print("\n=== UMBRAL ACTUAL DE SENSORES ULTRASÓNICOS ===\n")
+    print(str(threshold) + ' cm')
+    print('\n')
+
+def app():
+    config = load_config()
+    num_sensores = config["SERIAL"]["NUM_SENSOR"]
+    sensores = config["SERIAL"]["ULTRASONIC"]
+
+    serial = SerialLib(num_sensores=num_sensores)
+    
+    while True:
+        print("\n=== MENÚ DE CONFIGURACIÓN DE UMBRAL ===\n")
+        show_status(config)
+        option = input('Ingrese nuevo valor deseado en centímetros o "S" para salir.').strip()
+        if option.lower() == "s":
+            break
+        try:
+            umbral = float(option)
+            for i in sensores:
+                serial.configurar_umbral_float(i, umbral)
+            config["SERIAL"]["THRESHOLD"] = umbral
+            save_config(config)
+            print(f"\nUmbral actualizado con éxito a {umbral} cm\n")
+        except ValueError:
+            print("\nOpción no válida\n")
+            
+        
+if __name__ == "__main__":
+    app()

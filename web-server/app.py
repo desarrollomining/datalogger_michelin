@@ -2,15 +2,40 @@ import os
 import sys
 import json
 from flask import Flask, render_template, jsonify, request
+from time import sleep 
 
 sys.path.append('/srv/datalogger_michelin/')
 from database.models import Database
+from nema.nema import Nema
+from camera.camera import Camera
+from seriallib.serial_lib import SerialLib
+
 
 app = Flask(__name__)
 
-db = Database(log_id="FLASK_BACKEND")
+db = Database()
+nema = Nema()
 
 CONFIG_PATH = "/srv/datalogger_michelin/config_michelin.json"
+
+def init_serial():
+    try:
+        with open(CONFIG_PATH, 'r') as f:
+            config = json.load(f)
+        
+        server_ip = config["SERVER"]["IP"]
+        server_port = config["SERVER"]["PORT"]
+        num_sensors = config["SERIAL"]["NUM_SENSOR"]
+        
+        rx = SerialLib(num_sensores=num_sensors, log_id="SERIAL")
+        rx.set_server(server_ip, server_port)
+        rx.log("mining serial, initialized via Flask backend")
+        return rx
+    except Exception as e:
+        print(f"[ERROR SERIAL] No se pudo inicializar SerialLib: {e}")
+        return None
+    
+rx_serial = init_serial()
 
 def update_michelin_config(vehicle, wheel):
     """
@@ -114,5 +139,85 @@ def get_current_config():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+
+@app.route('/api/scan/start', methods=['POST'])
+def start_scan():
+    """
+    Inicia escaneo de neumático. 
+    """
+    if not rx_serial:
+        return jsonify({
+            "status": "error",
+            "message": "El servicio Serial no está inicializado o falló al arrancar."
+        }), 500
+        
+    try:
+        with open(CONFIG_PATH, 'r') as f:
+            config_data = json.load(f)
+        wheel = config_data["LOCATION"]["WHEEL"]
+        
+        cameras = []
+        for i in range(1, 5):
+            try:
+                cameras.append(Camera(wheel=wheel, device=i))
+            except:
+                print(f"Cámara {i} no se inicializó correctamente")
+        print("Iniciando escaneo de neumático...")
+        estados = rx_serial.revisar_estado_sensores()
+        reinicio = False
+        
+        for dir_hex, estado in estados.items():
+            if estado != "OK":
+                direccion = int(dir_hex, 16)
+                print(f"⚠️ Sensor {dir_hex} en estado '{estado}'. Enviando reinicio...")
+                rx_serial.reiniciar_sensor(direccion)
+                reinicio = True
+
+        if reinicio:
+            sleep(1)
+        
+        rx_serial.borrar_datos_global()
+        sleep(1)
+        
+        nema.mover_der()
+        rx_serial.iniciar_monitoreo_global()
+        for cam in cameras:
+            try: 
+                cam.start_recording()
+            except:
+                pass
+        nema.mover_izq()
+        
+        rx_serial.detener_monitoreo_global()
+        for cam in cameras:
+            try:
+                cam.stop_recording()
+            except:
+                pass
+        
+        rafagas = {}
+        for dir_int in rx_serial.direcciones_sensores:
+            dir_hex = hex(dir_int)
+            data = rx_serial.obtener_rafagas_completas(dir_int)
+            rafagas[dir_hex] = data
+        
+        cantidades_datos = [len(data) for data in rafagas.values()]
+        final_data = {}
+        
+        for dir_hex, data in rafagas.items():
+            final_data[dir_hex] = data[:min(cantidades_datos)]
+            
+        rx_serial.emit(data_type=rx_serial.log_id, data = final_data)
+        
+        return jsonify({
+            "status": "success",
+            "message": "Escaneo realizado correctamente."
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Error al iniciar el escaneo: {str(e)}"
+        }), 500
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=False)

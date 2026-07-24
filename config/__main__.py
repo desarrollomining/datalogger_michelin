@@ -38,7 +38,9 @@ class Config(Utils):
                     "WHEEL": ""
                 },
                 "SERIAL": {
-                    "NUM_SENSOR": 50
+                    "NUM_SENSOR": 50,
+                    "ULTRASONIC": [0xE1, 0xE2],
+                    "THRESHOLD": 20
                 }
             }
             

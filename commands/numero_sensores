@@ -1,0 +1,32 @@
+#!/usr/bin/env python3
+import json
+
+CONFIG_PATH = '/srv/datalogger_michelin/config_michelin.json'
+
+def load_config():
+    with open(CONFIG_PATH, "r") as f:
+        return json.load(f)
+
+def save_config(config):
+    with open(CONFIG_PATH, "w") as f:
+        json.dump(config, f, indent=4)
+        
+def app():
+    config = load_config()
+    while True:
+        num_sen = config["SERIAL"]["NUM_SENSOR"]
+        print("\n=== MENÚ DE CONFIGURACIÓN DE SENSORES ===\n")
+        print(f'Número actual de sensores: {num_sen}')
+        option = input("\nIngrese nuevo número de sensores o 'S' para salir.").strip()
+        if option.lower() == "s":
+            break
+        try: 
+            sensores_nuevo = int(option)
+            config["SERIAL"]["NUM_SENSOR"] = sensores_nuevo
+            save_config(config)
+            print(f'Número de sensores actualizado a {sensores_nuevo}')
+        except ValueError:
+            print("\nOpción no válida\n")
+        
+if __name__ == "__main__":
+    app()

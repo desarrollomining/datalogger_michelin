@@ -7,22 +7,24 @@ sys.path.append('/srv/datalogger_michelin/')
 from lib.utils import Utils
 
 class Camera(Utils):
-    def __init__(self, wheel, log_id = "CAMERA"):
+    def __init__(self, wheel, device, log_id = "CAMERA"):
         self.log_id = log_id
         self.wheel = wheel
+        self.device = '/dev/video' + str((device-1)*2)
         self.process = None
         self.max_duration = 300
         
     def start_recording(self):
-        self.log(f"Starting recording for wheel: {self.wheel}")
-        output_file = f"/srv/datalogger_michelin/web-server/static/videos/{self.wheel}.mp4"
+        self.log(f"Starting recording on {self.device} for wheel: {self.wheel}")
+        device_name = self.device.split('/')[-1]
+        output_file = f"/srv/datalogger_michelin/web-server/static/videos/{self.wheel}_{device_name}.mp4"
         try:
             command = [
                 'ffmpeg',
                 '-y',                     
                 '-f', 'v4l2',
                 '-video_size', '640x480',
-                '-i', '/dev/video0',
+                '-i', self.device,
                 '-c:v', 'libx264',
                 '-preset', 'ultrafast',
                 output_file
@@ -30,8 +32,9 @@ class Camera(Utils):
             self.process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             self.safety_thread = threading.Thread(target=self.safety_timeout, daemon=True)
             self.safety_thread.start()
-        except:
+        except Exception as e:
             self.traceback()
+            raise e
             
     def safety_timeout(self):
         start_time = time.time()
