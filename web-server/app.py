@@ -25,9 +25,8 @@ def init_serial():
         
         server_ip = config["SERVER"]["IP"]
         server_port = config["SERVER"]["PORT"]
-        num_sensors = config["SERIAL"]["NUM_SENSOR"]
         
-        rx = SerialLib(num_sensores=num_sensors, log_id="SERIAL")
+        rx = SerialLib(log_id="SERIAL")
         rx.set_server(server_ip, server_port)
         rx.log("mining serial, initialized via Flask backend")
         return rx

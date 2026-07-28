@@ -1,11 +1,14 @@
 import threading
 import struct
+import json
 from serial import Serial
 from time import time, sleep
 from lib.utils import Utils
 
+CONFIG_PATH = "/srv/datalogger_michelin/config_michelin.json"
+
 class SerialLib(Utils):
-    def __init__(self, num_sensores, baudrate: int = 9600, port: str = "/dev/serial0", log_id: str = "SERIAL") -> None:
+    def __init__(self, baudrate: int = 4800, port: str = "/dev/serial0", log_id: str = "SERIAL") -> None:
         self.baudrate = baudrate
         self.port = port
         self.timeout = 0.5
@@ -15,7 +18,9 @@ class SerialLib(Utils):
         
         self.bus_lock = threading.Lock()
         
-        self.num_sensores = num_sensores
+        with open(CONFIG_PATH, 'r') as f: 
+            config = json.load(f)
+        self.num_sensores = config["SERIAL"]["NUM_SENSOR"]
         self.direcciones_sensores = [0x41 + i for i in range(self.num_sensores)]
         
         self.ultimo_comando_enviado = None 

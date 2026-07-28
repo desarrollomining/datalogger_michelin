@@ -23,10 +23,9 @@ def show_status(config):
 
 def app():
     config = load_config()
-    num_sensores = config["SERIAL"]["NUM_SENSOR"]
     sensores = config["SERIAL"]["ULTRASONIC"]
 
-    serial = SerialLib(num_sensores=num_sensores)
+    serial = SerialLib()
     
     while True:
         print("\n=== MENÚ DE CONFIGURACIÓN DE UMBRAL ===\n")
