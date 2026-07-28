@@ -31,7 +31,7 @@ def app():
     while True:
         print("\n=== MENÚ DE CONFIGURACIÓN DE UMBRAL ===\n")
         show_status(config)
-        option = input('Ingrese nuevo valor deseado en centímetros o "S" para salir.').strip()
+        option = input('Ingrese nuevo valor deseado en centímetros o "S" para salir:\n').strip()
         if option.lower() == "s":
             break
         try:

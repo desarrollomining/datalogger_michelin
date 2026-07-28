@@ -17,7 +17,7 @@ def app():
         num_sen = config["SERIAL"]["NUM_SENSOR"]
         print("\n=== MENÚ DE CONFIGURACIÓN DE SENSORES ===\n")
         print(f'Número actual de sensores: {num_sen}')
-        option = input("\nIngrese nuevo número de sensores o 'S' para salir.").strip()
+        option = input("\nIngrese nuevo número de sensores o 'S' para salir:\n").strip()
         if option.lower() == "s":
             break
         try: 
