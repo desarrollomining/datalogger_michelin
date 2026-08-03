@@ -7,17 +7,23 @@ sys.path.append('/srv/datalogger_michelin/')
 from lib.utils import Utils
 
 class Nema(Utils):
-    def __init__(self, step_pin=18, dir_pin=23, sen_der=5, sen_izq=6, log_id="NEMA"):
+    def __init__(self, serial_lib, step_pin=18, dir_pin=23, log_id="NEMA"):
         self.log_id = log_id
         self.STEP = step_pin
         self.DIR = dir_pin
-        self.SEN_DER = sen_der
-        self.SEN_IZQ = sen_izq
+        
+        self.serial_bus = serial_lib
+        self.serial_bus.alert_callback = self.handle_alert
         
         self.FRECUENCIA_MOTOR = 800
         
         self.bloqueo_der = False
         self.bloqueo_izq = False
+        
+        self.tiempo_ultimo_e1 = 0
+        self.tiempo_ultimo_e2 = 0
+        self.TIMEOUT_ALERTA = 5.0 
+        
         self.estado_motor = "STOP"
         self.salir = False
         
@@ -30,10 +36,6 @@ class Nema(Utils):
     def _configurar_gpio(self):
         lgpio.gpio_claim_output(self.chip, self.STEP)
         lgpio.gpio_claim_output(self.chip, self.DIR)
-
-        lgpio.gpio_claim_input(self.chip, self.SEN_DER)
-        lgpio.gpio_claim_input(self.chip, self.SEN_IZQ)
-
         lgpio.gpio_write(self.chip, self.STEP, 0)
         lgpio.gpio_write(self.chip, self.DIR, 0)
             
@@ -54,32 +56,46 @@ class Nema(Utils):
             lgpio.tx_pwm(self.chip, self.STEP, 100, 0)
             lgpio.gpio_write(self.chip, self.STEP, 0)
     
+    def handle_alert(self, direccion, cuerpo):
+        print(f"¡Alerta recibida en sensor {hex(direccion)}! Bytes: {cuerpo}")
+        tiempo_actual = time.time()
+        
+        if direccion == 0xe1:
+            self.tiempo_ultimo_e1 = tiempo_actual
+            self.bloqueo_izq = True
+        elif direccion == 0xe2:
+            self.tiempo_ultimo_e2 = tiempo_actual
+            self.bloqueo_der = True
+    
     def tarea_sensores(self):
         aviso_der, aviso_izq = False, False
 
         while not self.salir:
-            self.bloqueo_der = bool(lgpio.gpio_read(self.chip, self.SEN_DER))
-            self.bloqueo_izq = bool(lgpio.gpio_read(self.chip, self.SEN_IZQ))
+            tiempo_actual = time.time()
+
+            if self.bloqueo_der and (tiempo_actual - self.tiempo_ultimo_e2) > self.TIMEOUT_ALERTA:
+                self.bloqueo_der = False
+
+            if self.bloqueo_izq and (tiempo_actual - self.tiempo_ultimo_e1) > self.TIMEOUT_ALERTA:
+                self.bloqueo_izq = False
 
             if self.bloqueo_der and not aviso_der:
                 self.log("DETENIDO: sensor derecho detectó obstáculo")
                 aviso_der = True
-            if not self.bloqueo_der and aviso_der:
+            elif not self.bloqueo_der and aviso_der:
                 self.log("Ruta derecha liberada")
                 aviso_der = False
 
             if self.bloqueo_izq and not aviso_izq:
                 self.log("DETENIDO: sensor izquierdo detectó obstáculo")
                 aviso_izq = True
-            if not self.bloqueo_izq and aviso_izq:
+            elif not self.bloqueo_izq and aviso_izq:
                 self.log("Ruta izquierda liberada")
                 aviso_izq = False
 
-            time.sleep(0.08)
-    
+            time.sleep(0.1)
     
     def mover_der(self):
-        """Mueve el motor a la derecha de forma continua hasta que el sensor derecho bloquee."""
         self.log("Iniciando movimiento automático a la DERECHA...")
         if self.bloqueo_der:
             self.log("No se puede iniciar movimiento a la derecha. El sensor derecho ya está bloqueado")
@@ -93,7 +109,6 @@ class Nema(Utils):
         self.log("Movimiento a la DERECHA finalizado por detección de obstáculo o límite.")
 
     def mover_izq(self):
-        """Mueve el motor a la izquierda de forma continua hasta que el sensor izquierdo bloquee."""
         self.log("Iniciando movimiento automático a la IZQUIERDA...")
         if self.bloqueo_izq:
             self.log("No se puede iniciar movimiento a la izquierda. El sensor izquierdo ya está bloqueado.")
@@ -112,4 +127,3 @@ class Nema(Utils):
         time.sleep(0.1)
         lgpio.gpiochip_close(self.chip)
         self.log("Proceso terminado correctamente")
-    

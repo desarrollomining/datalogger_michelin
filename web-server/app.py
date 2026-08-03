@@ -14,7 +14,6 @@ from seriallib.serial_lib import SerialLib
 app = Flask(__name__)
 
 db = Database()
-nema = Nema()
 
 CONFIG_PATH = "/srv/datalogger_michelin/config_michelin.json"
 
@@ -35,6 +34,8 @@ def init_serial():
         return None
     
 rx_serial = init_serial()
+
+nema = Nema(serial_lib=rx_serial)
 
 def update_michelin_config(vehicle, wheel):
     """
@@ -194,6 +195,7 @@ def start_scan():
             except:
                 pass
         
+        sleep(1)
         rafagas = {}
         for dir_int in rx_serial.direcciones_sensores:
             dir_hex = hex(dir_int)
@@ -205,6 +207,8 @@ def start_scan():
         
         for dir_hex, data in rafagas.items():
             final_data[dir_hex] = data[:min(cantidades_datos)]
+            
+        rx_serial.log(f"Final data: {final_data}")
             
         rx_serial.emit(data_type=rx_serial.log_id, data = final_data)
         

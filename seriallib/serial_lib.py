@@ -1,6 +1,7 @@
 import threading
 import struct
 import json
+import queue
 from serial import Serial
 from time import time, sleep
 from lib.utils import Utils
@@ -8,13 +9,15 @@ from lib.utils import Utils
 CONFIG_PATH = "/srv/datalogger_michelin/config_michelin.json"
 
 class SerialLib(Utils):
-    def __init__(self, baudrate: int = 4800, port: str = "/dev/serial0", log_id: str = "SERIAL") -> None:
+    def __init__(self, baudrate: int = 4800, port: str = "/dev/ttyUSB0", log_id: str = "SERIAL", alert_callback = None) -> None:
         self.baudrate = baudrate
         self.port = port
         self.timeout = 0.5
         self.log_id = log_id
+        self.alert_callback = alert_callback
         self.last_timestamp = time()
         self.serial_module = None
+        self.response_queue = queue.Queue()
         
         self.bus_lock = threading.Lock()
         
@@ -145,8 +148,9 @@ class SerialLib(Utils):
         todos_los_datos = []
         
         with self.bus_lock:
+            sleep(0.15)
             self.enviar_comando(direccion_sensor, 0x05)
-            if self.evento_respuesta.wait(timeout=0.6) and self.ultima_respuesta:
+            if self.evento_respuesta.wait(timeout=4.0) and self.ultima_respuesta:
                 total_datos = self.ultima_respuesta.get("cantidad_datos", 0)
             else:
                 self.log(f"❌ Error: No se pudo obtener la cantidad de datos del sensor {hex(direccion_sensor)}")
@@ -162,14 +166,24 @@ class SerialLib(Utils):
                 h_rango = (bloque >> 8) & 0xFF
                 l_rango = bloque & 0xFF
                 
-                self.log(f"Solicitando bloque {bloque} al sensor {hex(direccion_sensor)}...")
-                self.enviar_comando(direccion_sensor, 0x10, h_rango, l_rango)
+                exito_bloque = False
+                intentos = 3
                 
-                if self.evento_respuesta.wait(timeout=1.0) and self.ultima_respuesta:
-                    valores_bloque = self.ultima_respuesta.get("valores", [])
-                    todos_los_datos.extend(valores_bloque)
-                else:
-                    self.log(f"❌ Error crítico: Fallo al leer el bloque {bloque} del sensor {hex(direccion_sensor)}")
+                for intento in range(intentos):
+                    self.log(f"Solicitando bloque {bloque} al sensor {hex(direccion_sensor)} (Intento {intento + 1}/{intentos})...")
+                    self.enviar_comando(direccion_sensor, 0x10, h_rango, l_rango)
+                    
+                    if self.evento_respuesta.wait(timeout=4.0) and self.ultima_respuesta:
+                        valores_bloque = self.ultima_respuesta.get("valores", [])
+                        if valores_bloque or self.ultima_respuesta.get("cantidad", 0) == 0:
+                            todos_los_datos.extend(valores_bloque)
+                            exito_bloque = True
+                            break
+                    
+                    sleep(0.05) 
+                
+                if not exito_bloque:
+                    self.log(f"❌ Error crítico: Fallo definitivo al leer el bloque {bloque} del sensor {hex(direccion_sensor)}")
                     break
                     
                 sleep(0.02)
@@ -202,26 +216,15 @@ class SerialLib(Utils):
                     sleep(0.1)
                     continue
 
-                if self.ultimo_comando_enviado is None:
-                    if self.serial_module.in_waiting > 0:
-                        self.serial_module.reset_input_buffer()
-                    sleep(0.01)
-                    continue
-
-                header = self.serial_module.read(2)
+                with self.bus_lock:
+                    if self.serial_module.in_waiting < 2:
+                        continue
+                    header = self.serial_module.read(2)
+                
                 if len(header) < 2:
-                    self.ultimo_comando_enviado = None
-                    self.evento_respuesta.set()
                     continue
                 
                 dir_res, cmd_res = header[0], header[1]
-                
-                if cmd_res != self.ultimo_comando_enviado:
-                    self.serial_module.reset_input_buffer()
-                    self.ultimo_comando_enviado = None
-                    self.evento_respuesta.set()
-                    continue
-
                 self.procesar_respuesta(header, cmd_res)
                 
             except Exception:
@@ -260,9 +263,15 @@ class SerialLib(Utils):
                     cant_bytes = primer_byte + segundo_byte
                     cantidad_datos = (cant_bytes[0] << 8) | cant_bytes[1]
                     bytes_restantes = (cantidad_datos * 2) + 1
-                    datos_raw = self.serial_module.read(bytes_restantes)
+                    
+                    datos_raw = bytearray()
+                    tiempo_limite = time() + 3.0  
+                    while len(datos_raw) < bytes_restantes and time() < tiempo_limite:
+                        chunk = self.serial_module.read(bytes_restantes - len(datos_raw))
+                        if chunk:
+                            datos_raw.extend(chunk)
 
-                    trama_completa = header + cant_bytes + datos_raw
+                    trama_completa = header + cant_bytes + bytes(datos_raw)
                     if self._verificar_cks(trama_completa):
                         lista_valores = [(datos_raw[i] << 8) | datos_raw[i+1] for i in range(0, cantidad_datos * 2, 2)]
                         self.ultima_respuesta = {"cantidad": cantidad_datos, "valores": lista_valores}
@@ -273,11 +282,22 @@ class SerialLib(Utils):
                 if self._verificar_cks(trama_completa):
                     val_float = struct.unpack('>f', cuerpo[0:4])[0]
                     self.ultima_respuesta = {"distancia_float": val_float}
-
-            if self.ultima_respuesta:
-                data_emit = {"direccion": header[0], "comando": hex(cmd_res), **self.ultima_respuesta}
-                self.log(f"Emitiendo: {data_emit}")
-                self.emit(data_type=self.log_id, data=data_emit)
+            
+            elif cmd_res == 0x13:
+                cuerpo = self.serial_module.read(2)
+                if len(cuerpo) < 2:
+                    return
+                
+                trama_completa = header + cuerpo
+                if self._verificar_cks(trama_completa):
+                    self.ultima_respuesta = {"alerta_limite": cuerpo}
+                    
+                    if self.alert_callback:
+                        try:
+                            self.alert_callback(header[0], cuerpo)
+                        except Exception as e:
+                            self.log(f"Error en callback de alerta: {e}")
+                return
 
         finally:
             self.ultimo_comando_enviado = None
