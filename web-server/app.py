@@ -163,24 +163,28 @@ def start_scan():
             except:
                 print(f"Cámara {i} no se inicializó correctamente")
         print("Iniciando escaneo de neumático...")
-        estados = rx_serial.revisar_estado_sensores()
+        estados = []
+
+        for sensor in rx_serial.direcciones_sensores:
+            estado = rx_serial.obtener_estado(sensor)
+            estados.append((sensor, estado))        
+
         reinicio = False
-        
-        for dir_hex, estado in estados.items():
-            if estado != "OK":
-                direccion = int(dir_hex, 16)
-                print(f"⚠️ Sensor {dir_hex} en estado '{estado}'. Enviando reinicio...")
-                rx_serial.reiniciar_sensor(direccion)
+
+        for sensor, estado in estados:
+            if estado != 0x01:
+                print(f"⚠️ Sensor {hex(sensor)} con estado inválido o sin respuesta ({estado}). Enviando reinicio...")
+                rx_serial.reinicio_sensor(sensor)
                 reinicio = True
 
         if reinicio:
             sleep(1)
         
-        rx_serial.borrar_datos_global()
+        rx_serial.borrado_global()
         sleep(1)
         
         nema.mover_der()
-        rx_serial.iniciar_monitoreo_global()
+        rx_serial.start_global()
         for cam in cameras:
             try: 
                 cam.start_recording()
@@ -188,7 +192,7 @@ def start_scan():
                 pass
         nema.mover_izq()
         
-        rx_serial.detener_monitoreo_global()
+        rx_serial.stop_global()
         for cam in cameras:
             try:
                 cam.stop_recording()
@@ -200,7 +204,19 @@ def start_scan():
         for dir_int in rx_serial.direcciones_sensores:
             dir_hex = hex(dir_int)
             data = rx_serial.obtener_rafagas_completas(dir_int)
-            rafagas[dir_hex] = data
+            data_limpia = [val for val in data if not (isinstance(val, float) and str(val).lower() == 'nan')]
+            
+            if data_limpia:
+                rafagas[dir_hex] = data_limpia
+            else:
+                rx_serial.log(f"Sensor {dir_hex} omitido por no tener datos válidos o estar vacío.")
+
+        if not rafagas:
+            return jsonify({
+                "status": "error",
+                "message": "Ningún sensor devolvió datos válidos durante el escaneo."
+            }), 400
+        
         
         cantidades_datos = [len(data) for data in rafagas.values()]
         final_data = {}

@@ -60,11 +60,11 @@ class Nema(Utils):
         print(f"¡Alerta recibida en sensor {hex(direccion)}! Bytes: {cuerpo}")
         tiempo_actual = time.time()
         
-        if direccion == 0xe1:
-            self.tiempo_ultimo_e1 = tiempo_actual
-            self.bloqueo_izq = True
-        elif direccion == 0xe2:
+        if direccion == 0xe2:
             self.tiempo_ultimo_e2 = tiempo_actual
+            self.bloqueo_izq = True
+        elif direccion == 0xe1:
+            self.tiempo_ultimo_e1 = tiempo_actual
             self.bloqueo_der = True
     
     def tarea_sensores(self):
@@ -73,10 +73,10 @@ class Nema(Utils):
         while not self.salir:
             tiempo_actual = time.time()
 
-            if self.bloqueo_der and (tiempo_actual - self.tiempo_ultimo_e2) > self.TIMEOUT_ALERTA:
+            if self.bloqueo_der and (tiempo_actual - self.tiempo_ultimo_e1) > self.TIMEOUT_ALERTA:
                 self.bloqueo_der = False
 
-            if self.bloqueo_izq and (tiempo_actual - self.tiempo_ultimo_e1) > self.TIMEOUT_ALERTA:
+            if self.bloqueo_izq and (tiempo_actual - self.tiempo_ultimo_e2) > self.TIMEOUT_ALERTA:
                 self.bloqueo_izq = False
 
             if self.bloqueo_der and not aviso_der:

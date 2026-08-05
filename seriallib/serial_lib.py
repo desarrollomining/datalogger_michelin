@@ -18,295 +18,317 @@ class SerialLib(Utils):
         self.last_timestamp = time()
         self.serial_module = None
         self.response_queue = queue.Queue()
-        
-        self.bus_lock = threading.Lock()
-        
+         
         with open(CONFIG_PATH, 'r') as f: 
             config = json.load(f)
         self.num_sensores = config["SERIAL"]["NUM_SENSOR"]
         self.direcciones_sensores = [0x41 + i for i in range(self.num_sensores)]
         
-        self.ultimo_comando_enviado = None 
-        self.ultima_respuesta = None
-        self.evento_respuesta = threading.Event()
+        self.escuchando_alertas = True
+        
+        # Evento para pausar/reanudar el hilo de alertas limpiamente
+        self.evento_adquisicion = threading.Event()
+        
+        # Bloqueo para sincronizar accesos concurrentes al puerto serial entre hilos
+        self.serial_lock = threading.Lock()
         
         threading.Thread(target=self.connect, daemon=True).start()
         
-    def connect(self) -> None:
-        """Establece la conexión serial con el dispositivo."""
-        try:
-            self.log(f"Intentando conectar al puerto serial: {self.port}")
-            self.serial_module = Serial(self.port, self.baudrate, timeout=self.timeout)
-            
-            self.serial_module.reset_input_buffer()
-            self.serial_module.reset_output_buffer()
-            
-            self.read_loop()
-        except Exception as Ex:
-            self.log(f"Error de conexión: {Ex}")
-            
-    def _calcular_cks(self, trama: bytearray) -> int:
-        return sum(trama) & 0xFF
+        self.hilo_alertas = threading.Thread(target=self._bucle_escucha_alertas, daemon=True)
+        self.hilo_alertas.start()
 
-    def enviar_comando(self, direccion: int, comando: int, val1: int = 0, val2: int = 0, val3: int = 0, val4: int = 0) -> None:
-        """Envía la trama física de 7 bytes al bus."""
+    def connect(self):
+        """Establece la conexión serial con el puerto configurado."""
+        try:
+            with self.serial_lock:
+                self.serial_module = Serial(port=self.port, baudrate=self.baudrate, timeout=self.timeout)
+            self.log(f"[{self.log_id}] Conectado exitosamente al puerto {self.port} a {self.baudrate} baudios.")
+        except Exception as e:
+            self.log(f"[{self.log_id}] [ERROR] Error al conectar con el puerto serial: {e}")
+
+    def _bucle_escucha_alertas(self):
+        """Monitorea el puerto serial buscando alertas 0x13 únicamente durante la adquisición activa."""
+        while self.escuchando_alertas:
+            # Si no hay adquisición activa, el hilo duerme esperando la señal de START GLOBAL
+            self.evento_adquisicion.wait()
+            
+            try:
+                if self.serial_module and self.serial_module.is_open:
+                    with self.serial_lock:
+                        if self.serial_module.in_waiting >= 4:
+                            buffer_actual = self.serial_module.read(self.serial_module.in_waiting)
+                        else:
+                            buffer_actual = b""
+                    
+                    if buffer_actual:
+                        # Analizamos el buffer en busca de tramas de alerta 0x13 (longitud fija de 4 bytes)
+                        i = 0
+                        while i <= len(buffer_actual) - 4:
+                            r_dir = buffer_actual[i]
+                            r_cmd = buffer_actual[i+1]
+                            
+                            if r_cmd == 0x13:
+                                cuerpo = buffer_actual[i+2]
+                                cks = buffer_actual[i+3]
+                                cks_calc = (r_dir + r_cmd + cuerpo) & 0xFF
+                                
+                                if cks == cks_calc:
+                                    if self.alert_callback:
+                                        self.alert_callback(r_dir, cuerpo)
+                                    buffer_actual = buffer_actual[:i] + buffer_actual[i+4:]
+                                    continue
+                            i += 1
+                sleep(0.05)
+            except Exception as e:
+                sleep(0.1)
+
+    def enviar_orden(self, dir_val: int, cmd: int, val_1: int, val_2: int, val_3: int, val_4: int):
+        """Envía una trama de orden por RS485 calculando el checksum."""
         if not self.serial_module or not self.serial_module.is_open:
-            self.log("Error: Puerto serial no está abierto.")
+            self.log(f"[{self.log_id}] [ERROR] Puerto serial no disponible para enviar orden.")
             return
 
-        trama = bytearray([direccion, comando, val1, val2, val3, val4])
-        cks = self._calcular_cks(trama)
-        trama.append(cks)
+        cks = (dir_val + cmd + val_1 + val_2 + val_3 + val_4) & 0xFF
+        trama = struct.pack("BBBBBBB", dir_val, cmd, val_1, val_2, val_3, val_4, cks)
         
         try:
-            self.serial_module.reset_input_buffer()
-            self.evento_respuesta.clear()
-            self.ultima_respuesta = None
-            self.ultimo_comando_enviado = comando    
-            
-            self.serial_module.write(trama)
-            self.log(f"-> MAESTRO [{hex(direccion)}]: {hex(comando)} -> {[hex(b) for b in trama]}")
-            
-            if direccion == 0xFF or comando in [0x02, 0x03, 0x04, 0x08, 0x09]:
-                self.ultimo_comando_enviado = None
-                self.evento_respuesta.set()
+            with self.serial_lock:
+                self.serial_module.write(trama)
+                self.serial_module.flush()
+        except Exception as e:
+            self.log(f"[{self.log_id}] [ERROR] Error al escribir en el puerto serial: {e}")
+
+    def esperar_respuesta(self, bytes_esperados: int):
+        """Espera y procesa respuestas estándar (Estado, Cantidad, Dato único)."""
+        start_wait = time()
+        while (time() - start_wait) < self.timeout:
+            with self.serial_lock:
+                in_w = self.serial_module.in_waiting if self.serial_module else 0
+            if in_w >= bytes_esperados:
+                with self.serial_lock:
+                    datos = self.serial_module.read(bytes_esperados)
+                r_dir = datos[0]
+                r_cmd = datos[1]
                 
-        except Exception as Ex:
-            self.log(f"Error al enviar comando: {Ex}")
+                if r_cmd == 0x01:
+                    st = datos[2]
+                    cks = datos[3]
+                    cks_calc = (r_dir + r_cmd + st) & 0xFF
+                    if cks != cks_calc:
+                        self.log(f"[{self.log_id}] [ERROR] Checksum inválido en Estado")
+                        return None
+                    estado_str = "OK" if st == 0x01 else "ERROR"
+                    self.log(f"[{self.log_id}] [RESP] Nodo {chr(r_dir)} | Estado: {estado_str}")
+                    return st
 
-    def revisar_estado_sensores(self) -> dict:
-        """Consulta el estado (0x01) de cada sensor registrado en el sistema."""
-        estados = {}
-        with self.bus_lock:
-            for dir_sensor in self.direcciones_sensores:
-                self.enviar_comando(dir_sensor, 0x01)
-                if self.evento_respuesta.wait(timeout=0.6) and self.ultima_respuesta:
-                    estados[hex(dir_sensor)] = "OK" if self.ultima_respuesta.get("estado") == 0x01 else "FALLA"
-                else:
-                    estados[hex(dir_sensor)] = "TIMEOUT/DESCONECTADO"
-        return estados
-    
-    def borrar_datos_local(self, direccion_sensor: int) -> None:
-        """Comando 0x02: Borra la EEPROM local de un nodo."""
-        with self.bus_lock:
-            self.log(f"Borrando datos locales del sensor {hex(direccion_sensor)}...")
-            self.enviar_comando(direccion_sensor, 0x02)
-            sleep(0.05)
-            
-    def iniciar_monitoreo_global(self) -> None:
-        """Arranca las mediciones en todos los sensores de forma secuencial."""
-        with self.bus_lock:
-            self.log("Iniciando monitoreo en todos los sensores...")
-            for dir_sensor in self.direcciones_sensores:
-                self.enviar_comando(dir_sensor, 0x03)
-                sleep(0.05)
-                
-    def detener_monitoreo_global(self) -> None:
-        """Pausa las mediciones en todos los sensores de forma secuencial."""
-        with self.bus_lock:
-            self.log("Deteniendo monitoreo en todos los sensores...")
-            for dir_sensor in self.direcciones_sensores:
-                self.enviar_comando(dir_sensor, 0x04)
-                sleep(0.05)
-
-    def consultar_cantidad_datos(self, direccion_sensor: int) -> int:
-        """Pregunta a un sensor específico cuántos datos tiene guardados (uint16)."""
-        with self.bus_lock:
-            self.enviar_comando(direccion_sensor, 0x05)
-            if self.evento_respuesta.wait(timeout=0.6) and self.ultima_respuesta:
-                return self.ultima_respuesta.get("cantidad_datos", 0)
-            return 0
-    
-    def leer_dato_especifico(self, direccion_sensor: int, indice: int) -> int:
-        """Comando 0x06: Lee una posición específica. Devuelve valor o código de error (0xFFFF / 0xE001)."""
-        h_idx = (indice >> 8) & 0xFF
-        l_idx = indice & 0xFF
-        with self.bus_lock:
-            self.enviar_comando(direccion_sensor, 0x06, h_idx, l_idx)
-            if self.evento_respuesta.wait(timeout=0.6) and self.ultima_respuesta:
-                return self.ultima_respuesta.get("distancia_mm", 0xFFFF)
-            return 0xFFFF
-    
-    def borrar_datos_global(self) -> None:
-        """Borra los datos de todos los sensores al mismo tiempo usando Broadcast (0xFF)."""
-        with self.bus_lock:
-            self.log("Enviando orden de borrado global (Broadcast)...")
-            self.enviar_comando(0xFF, 0x08)
-            sleep(0.2)
-
-    def reiniciar_sensor(self, direccion_sensor: int) -> None:
-        """Realiza un Soft Reset (0x09) a un sensor específico."""
-        with self.bus_lock:
-            self.log(f"Reiniciando sensor {hex(direccion_sensor)}...")
-            self.enviar_comando(direccion_sensor, 0x09)
-            sleep(0.3)
-
-    def obtener_rafagas_completas(self, direccion_sensor: int) -> list:
-        """
-        Descarga TODOS los datos de un sensor utilizando bloques de 100 en 100 (Comando 0x10).
-        """
-        todos_los_datos = []
-        
-        with self.bus_lock:
-            sleep(0.15)
-            self.enviar_comando(direccion_sensor, 0x05)
-            if self.evento_respuesta.wait(timeout=4.0) and self.ultima_respuesta:
-                total_datos = self.ultima_respuesta.get("cantidad_datos", 0)
-            else:
-                self.log(f"❌ Error: No se pudo obtener la cantidad de datos del sensor {hex(direccion_sensor)}")
-                return todos_los_datos
-                
-            self.log(f"Sensor {hex(direccion_sensor)} reporta un total de {total_datos} datos.")
-            if total_datos == 0:
-                return todos_los_datos
-
-            num_bloques = (total_datos + 99) // 100 
-
-            for bloque in range(num_bloques):
-                h_rango = (bloque >> 8) & 0xFF
-                l_rango = bloque & 0xFF
-                
-                exito_bloque = False
-                intentos = 3
-                
-                for intento in range(intentos):
-                    self.log(f"Solicitando bloque {bloque} al sensor {hex(direccion_sensor)} (Intento {intento + 1}/{intentos})...")
-                    self.enviar_comando(direccion_sensor, 0x10, h_rango, l_rango)
+                elif r_cmd in (0x05, 0x06):
+                    h = datos[2]
+                    l = datos[3]
+                    cks = datos[4]
+                    cks_calc = (r_dir + r_cmd + h + l) & 0xFF
+                    if cks != cks_calc:
+                        self.log(f"[{self.log_id}] [ERROR] Checksum inválido en Datos")
+                        return None
                     
-                    if self.evento_respuesta.wait(timeout=4.0) and self.ultima_respuesta:
-                        valores_bloque = self.ultima_respuesta.get("valores", [])
-                        if valores_bloque or self.ultima_respuesta.get("cantidad", 0) == 0:
-                            todos_los_datos.extend(valores_bloque)
-                            exito_bloque = True
-                            break
-                    
-                    sleep(0.05) 
-                
-                if not exito_bloque:
-                    self.log(f"❌ Error crítico: Fallo definitivo al leer el bloque {bloque} del sensor {hex(direccion_sensor)}")
-                    break
-                    
-                sleep(0.02)
-                
-        return todos_los_datos
-    
-    def configurar_umbral_float(self, direccion_sensor: int, valor_float: float) -> bool:
-        """Comando 0x11: Configura umbral de distancia para sensores ultrasónicos."""
-        bytes_float = struct.pack('>f', valor_float)
-        b3, b2, b1, b0 = bytes_float[0], bytes_float[1], bytes_float[2], bytes_float[3]
-        
-        with self.bus_lock:
-            self.enviar_comando(direccion_sensor, 0x11, b3, b2, b1, b0)
-            if self.evento_respuesta.wait(timeout=0.6) and self.ultima_respuesta:
-                return self.ultima_respuesta.get("estado") == 0x01
-            return False
-        
-    def consultar_distancia_actual(self, direccion_sensor: int):
-        """Comando 0x12: Consulta la medición actual en vivo en formato float (cm ultrasónico / mm ToF)."""
-        with self.bus_lock:
-            self.enviar_comando(direccion_sensor, 0x12)
-            if self.evento_respuesta.wait(timeout=0.6) and self.ultima_respuesta:
-                return self.ultima_respuesta.get("distancia_float")
-            return None
-
-    def read_loop(self) -> None:
-        while True:
-            try:
-                if not self.serial_module or not self.serial_module.is_open:
-                    sleep(0.1)
-                    continue
-
-                with self.bus_lock:
-                    if self.serial_module.in_waiting < 2:
-                        continue
-                    header = self.serial_module.read(2)
-                
-                if len(header) < 2:
-                    continue
-                
-                dir_res, cmd_res = header[0], header[1]
-                self.procesar_respuesta(header, cmd_res)
-                
-            except Exception:
-                self.traceback()
+                    val = (h << 8) | l
+                    if val == 0xE001:
+                        self.log(f"[{self.log_id}] [ERROR] Nodo {chr(r_dir)} | SENSOR NO RESPONDE (Timeout Hardware)")
+                    elif val == 0xFFFF:
+                        self.log(f"[{self.log_id}] [AVISO] Nodo {chr(r_dir)} | ÍNDICE FUERA DE RANGO O MEMORIA VACÍA")
+                    else:
+                        tipo_msj = "CANTIDAD" if r_cmd == 0x05 else "VALOR"
+                        self.log(f"[{self.log_id}] [RESP] Nodo {chr(r_dir)} | {tipo_msj}: {val} mm")
+                    return val
             sleep(0.01)
 
-    def procesar_respuesta(self, header: bytes, cmd_res: int) -> None:
-        try:
-            if cmd_res in [0x01, 0x11]:
-                cuerpo = self.serial_module.read(2)
-                trama_completa = header + cuerpo
-                if self._verificar_cks(trama_completa):
-                    self.ultima_respuesta = {"estado": cuerpo[0]}
+        if self.serial_module:
+            with self.serial_lock:
+                while self.serial_module.in_waiting:
+                    self.serial_module.read()
+        self.log(f"[{self.log_id}] [WARNING] >> Error: Timeout esperando respuesta")
+        return None
 
-            elif cmd_res in [0x05, 0x06]:
-                cuerpo = self.serial_module.read(3)
-                trama_completa = header + cuerpo
-                if self._verificar_cks(trama_completa):
-                    valor = (cuerpo[0] << 8) | cuerpo[1]
-                    key = "cantidad_datos" if cmd_res == 0x05 else "distancia_mm"
-                    self.ultima_respuesta = {key: valor}
+    def recibir_rafaga(self, nodo: int):
+        """Recibe una ráfaga de datos o lectura de rangos desde el esclavo."""
+        start_wait = time()
+        while True:
+            with self.serial_lock:
+                in_w = self.serial_module.in_waiting if self.serial_module else 0
+            if in_w >= 4 or (time() - start_wait) >= 0.5:
+                break
+            sleep(0.01)
 
-            elif cmd_res == 0x10:
-                primer_byte = self.serial_module.read(1)
-                if len(primer_byte) < 1: return
+        if in_w >= 4:
+            with self.serial_lock:
+                cabecera = self.serial_module.read(4)
+            r_dir = cabecera[0]
+            r_cmd = cabecera[1]
+            h_cantidad = cabecera[2]
+            l_cantidad = cabecera[3]
 
-                if primer_byte[0] == 0xEE:
-                    cks = self.serial_module.read(1)
-                    trama_completa = header + primer_byte + cks
-                    if self._verificar_cks(trama_completa):
-                        self.ultima_respuesta = {"error": 0xEE, "valores": []}
+            if r_cmd == 0x10 and h_cantidad == 0xEE:
+                self.log(f"[{self.log_id}] [WARNING] >> Error: El rango solicitado no existe en el esclavo.")
+                return []
+            if r_cmd == 0x07 and h_cantidad == 0x00:
+                self.log(f"[{self.log_id}] >> Aviso: No hay datos grabados en este nodo.")
+                return []
+
+            cantidad = (h_cantidad << 8) | l_cantidad
+            resultados = []
+
+            if (r_cmd == 0x07 or r_cmd == 0x10) and cantidad > 0:
+                self.log(f"[{self.log_id}] >> Nodo {chr(r_dir)}: Descargando {cantidad} datos...")
+                cks_calc = (r_dir + r_cmd + h_cantidad + l_cantidad) & 0xFF
+
+                for i in range(cantidad):
+                    byte_wait = time()
+                    while True:
+                        with self.serial_lock:
+                            in_w_bytes = self.serial_module.in_waiting if self.serial_module else 0
+                        if in_w_bytes >= 2 or (time() - byte_wait) >= self.timeout:
+                            break
+                        sleep(0.005)
+
+                    if in_w_bytes >= 2:
+                        with self.serial_lock:
+                            par = self.serial_module.read(2)
+                        h = par[0]
+                        l = par[1]
+                        cks_calc = (cks_calc + h + l) & 0xFF
+                        val = (h << 8) | l
+                        resultados.append(val)
+                    else:
+                        self.log(f"[{self.log_id}] [ERROR] >> Error: Timeout a mitad de la ráfaga.")
+                        return []
+
+                cks_wait = time()
+                while True:
+                    with self.serial_lock:
+                        in_w_cks = self.serial_module.in_waiting if self.serial_module else 0
+                    if in_w_cks >= 1 or (time() - cks_wait) >= self.timeout:
+                        break
+                    sleep(0.005)
+
+                if in_w_cks >= 1:
+                    with self.serial_lock:
+                        cks_rx = self.serial_module.read(1)[0]
+                    if cks_rx == cks_calc:
+                        self.log(f"[{self.log_id}] >> Descarga completada con éxito (Checksum OK).")
+                        return resultados
+                    else:
+                        self.log(f"[{self.log_id}] [ERROR] >> Error: Checksum ráfaga falló. (Calc: {cks_calc:02X}, Rx: {cks_rx:02X})")
                 else:
-                    segundo_byte = self.serial_module.read(1)
-                    if len(segundo_byte) < 1: return
+                    self.log(f"[{self.log_id}] [ERROR] >> Error: Timeout esperando checksum de ráfaga.")
+        else:
+            self.log(f"[{self.log_id}] [ERROR] >> Error: Timeout esperando encabezado de ráfaga.")
+        return []
 
-                    cant_bytes = primer_byte + segundo_byte
-                    cantidad_datos = (cant_bytes[0] << 8) | cant_bytes[1]
-                    bytes_restantes = (cantidad_datos * 2) + 1
-                    
-                    datos_raw = bytearray()
-                    tiempo_limite = time() + 3.0  
-                    while len(datos_raw) < bytes_restantes and time() < tiempo_limite:
-                        chunk = self.serial_module.read(bytes_restantes - len(datos_raw))
-                        if chunk:
-                            datos_raw.extend(chunk)
+    def obtener_estado(self, nodo: int):
+        self.enviar_orden(nodo, 0x01, 0x00, 0x00, 0x00, 0x00)
+        return self.esperar_respuesta(4)
 
-                    trama_completa = header + cant_bytes + bytes(datos_raw)
-                    if self._verificar_cks(trama_completa):
-                        lista_valores = [(datos_raw[i] << 8) | datos_raw[i+1] for i in range(0, cantidad_datos * 2, 2)]
-                        self.ultima_respuesta = {"cantidad": cantidad_datos, "valores": lista_valores}
+    def borrado_local(self, nodo: int):
+        self.enviar_orden(nodo, 0x02, 0x00, 0x00, 0x00, 0x00)
+        self.log(f"[{self.log_id}] >> Borrado individual enviado al Nodo {chr(nodo)} (Sin respuesta)")
+
+    def start_global(self):
+        """Envía el comando START GLOBAL y activa el evento de alertas tras 1 segundo."""
+        self.enviar_orden(0xFF, 0x03, 0x00, 0x00, 0x00, 0x00)
+        self.log(f"[{self.log_id}] >> START GLOBAL (Esperando 1s para activar alertas...)")
+        
+        # Usamos un temporizador en segundo plano para no bloquear el hilo principal
+        def activar_con_retraso():
+            sleep(1.0)
+            # Verificamos opcionalmente si no se ha hecho un stop en ese segundo
+            self.evento_adquisicion.set()
+            self.log(f"[{self.log_id}] >> Hilo de alertas activado tras el retraso.")
+
+        threading.Thread(target=activar_con_retraso, daemon=True).start()
+
+    def stop_global(self):
+        self.enviar_orden(0xFF, 0x04, 0x00, 0x00, 0x00, 0x00)
+        # Limpiamos el evento para pausar inmediatamente el hilo de alertas
+        self.evento_adquisicion.clear()
+        self.log(f"[{self.log_id}] >> STOP GLOBAL")
+
+    def obtener_cantidad(self, nodo: int):
+        self.enviar_orden(nodo, 0x05, 0x00, 0x00, 0x00, 0x00)
+        return self.esperar_respuesta(5)
+
+    def obtener_dato_unico(self, nodo: int, idx: int):
+        h_idx = (idx >> 8) & 0xFF
+        l_idx = idx & 0xFF
+        self.enviar_orden(nodo, 0x06, h_idx, l_idx, 0x00, 0x00)
+        return self.esperar_respuesta(5)
+
+    def obtener_rafaga(self, nodo: int):
+        self.enviar_orden(nodo, 0x07, 0x00, 0x00, 0x00, 0x00)
+        return self.recibir_rafaga(nodo)
+
+    def borrado_global(self):
+        self.enviar_orden(0xFF, 0x08, 0x00, 0x00, 0x00, 0x00)
+        self.log(f"[{self.log_id}] >> BORRADO GLOBAL")
+
+    def reinicio_sensor(self, nodo: int):
+        self.enviar_orden(nodo, 0x09, 0x00, 0x00, 0x00, 0x00)
+        self.log(f"[{self.log_id}] >> Orden de RE-INIT enviada al sensor del Nodo {chr(nodo)} (Sin respuesta)")
+
+    def leer_rango(self, nodo: int, idx: int):
+        h_idx = (idx >> 8) & 0xFF
+        l_idx = idx & 0xFF
+        self.enviar_orden(nodo, 0x10, h_idx, l_idx, 0x00, 0x00)
+        return self.recibir_rafaga(nodo)
+
+    def enviar_config_distancia(self, nodo: int, f_val: float):
+        f_bytes = struct.pack("<f", f_val)
+        self.enviar_orden(nodo, 0x11, f_bytes[3], f_bytes[2], f_bytes[1], f_bytes[0])
+        self.log(f"[{self.log_id}] >> Float enviado: {f_val:.4f} al Nodo {chr(nodo)}")
+
+    def obtener_rafagas_completas(self, nodo: int, max_intentos_bloque=3):
+        cantidad_total = self.obtener_cantidad(nodo)
+        if cantidad_total is None or cantidad_total in (0xFFFF, 0xE001, 0):
+            return []
+        
+        import math
+        bloques = math.ceil(cantidad_total / 100)
+        datos_completos = []
+
+        for idx_bloque in range(bloques):
+            bloque_exitoso = False
+            for intento in range(1, max_intentos_bloque + 1):
+                datos_bloque = self.leer_rango(nodo, idx_bloque)
+                if datos_bloque:
+                    datos_completos.extend(datos_bloque)
+                    bloque_exitoso = True
+                    break
+                else:
+                    sleep(0.5)
+            if not bloque_exitoso:
+                break
+        return datos_completos
+
+    def obtener_todas_las_matrices(self):
+        matriz_resultados = {}
+        for nodo in self.direcciones_sensores:
+            valores_sensor = self.obtener_rafagas_completas(nodo)
+            matriz_resultados[nodo] = valores_sensor
+        return matriz_resultados
+
+    def obtener_matriz_unificada_sensores(self, max_intentos_bloque=3):
+        matriz_datos = {}
+        for nodo in self.direcciones_sensores:
+            matriz_datos[nodo] = self.obtener_rafagas_completas(nodo, max_intentos_bloque)
+
+        max_longitud = max((len(valores) for valores in matriz_datos.values()), default=0)
+        matriz_unificada = []
+        for i in range(max_longitud):
+            fila = []
+            for nodo in self.direcciones_sensores:
+                valores = matriz_datos.get(nodo, [])
+                if i < len(valores):
+                    fila.append(valores[i])
+                else:
+                    fila.append(float('nan'))
+            matriz_unificada.append(fila)
             
-            elif cmd_res == 0x12:
-                cuerpo = self.serial_module.read(5)
-                trama_completa = header + cuerpo
-                if self._verificar_cks(trama_completa):
-                    val_float = struct.unpack('>f', cuerpo[0:4])[0]
-                    self.ultima_respuesta = {"distancia_float": val_float}
-            
-            elif cmd_res == 0x13:
-                cuerpo = self.serial_module.read(2)
-                if len(cuerpo) < 2:
-                    return
-                
-                trama_completa = header + cuerpo
-                if self._verificar_cks(trama_completa):
-                    self.ultima_respuesta = {"alerta_limite": cuerpo}
-                    
-                    if self.alert_callback:
-                        try:
-                            self.alert_callback(header[0], cuerpo)
-                        except Exception as e:
-                            self.log(f"Error en callback de alerta: {e}")
-                return
-
-        finally:
-            self.ultimo_comando_enviado = None
-            self.evento_respuesta.set()
-
-    def _verificar_cks(self, trama: bytes) -> bool:
-        if len(trama) < 3: return False
-        cks_recibido = trama[-1]
-        if cks_recibido == self._calcular_cks(trama[:-1]):
-            return True
-        self.log(f"❌ Checksum incorrecto.")
-        return False
+        return matriz_datos, matriz_unificada, max_longitud
