@@ -2,6 +2,7 @@ import threading
 import struct
 import json
 import queue
+import math
 from serial import Serial
 from time import time, sleep
 from lib.utils import Utils
@@ -285,11 +286,19 @@ class SerialLib(Utils):
         self.log(f"[{self.log_id}] >> Float enviado: {f_val:.4f} al Nodo {chr(nodo)}")
 
     def obtener_rafagas_completas(self, nodo: int, max_intentos_bloque=3):
-        cantidad_total = self.obtener_cantidad(nodo)
+        """Obtiene la cantidad total de datos con reintentos y descarga todos los bloques necesarios."""
+        cantidad_total = None
+        for intento in range(1, max_intentos_bloque + 1):
+            cantidad_total = self.obtener_cantidad(nodo)
+            if cantidad_total is not None and cantidad_total not in (0xFFFF, 0xE001, 0):
+                break
+            self.log(f"[{self.log_id}] [WARNING] Reintento {intento}/{max_intentos_bloque} para obtener cantidad del Nodo {chr(nodo)}")
+            sleep(0.3)
+
         if cantidad_total is None or cantidad_total in (0xFFFF, 0xE001, 0):
+            self.log(f"[{self.log_id}] [ERROR] No se pudo obtener una cantidad válida de datos para el nodo {hex(nodo)} tras varios intentos.")
             return []
         
-        import math
         bloques = math.ceil(cantidad_total / 100)
         datos_completos = []
 
@@ -302,9 +311,11 @@ class SerialLib(Utils):
                     bloque_exitoso = True
                     break
                 else:
-                    sleep(0.5)
+                    sleep(0.2)
             if not bloque_exitoso:
+                self.log(f"[{self.log_id}] [ERROR] Falló el bloque {idx_bloque} del Nodo {hex(nodo)} tras {max_intentos_bloque} intentos.")
                 break
+                
         return datos_completos
 
     def obtener_todas_las_matrices(self):

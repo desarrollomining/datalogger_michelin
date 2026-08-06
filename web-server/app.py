@@ -124,21 +124,76 @@ def get_heatmap_data():
 
 @app.route('/api/config/current')
 def get_current_config():
-    """Devuelve la configuración actual de VEHICLE y WHEEL desde el JSON."""
+    """Devuelve la configuración actual de VEHICLE, WHEEL y FREQUENCY desde el JSON."""
     try:
         if os.path.exists(CONFIG_PATH):
             with open(CONFIG_PATH, 'r') as f:
                 config_data = json.load(f)
             location = config_data.get("LOCATION", {})
+            nema_config = config_data.get("NEMA", {})
             return jsonify({
                 "status": "success",
                 "vehicle": location.get("VEHICLE", ""),
-                "position": location.get("WHEEL", "FL")
+                "position": location.get("WHEEL", "FL"),
+                "frequency": nema_config.get("FREQUENCY", 800)
             })
         return jsonify({"status": "error", "message": "Archivo no encontrado"}), 404
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+@app.route('/api/config/frequency', methods=['POST'])
+def update_frequency():
+    """
+    Recibe la frecuencia enviada por el frontend, la actualiza 
+    en el nodo NEMA dentro de config_michelin.json y la guarda.
+    """
+    try:
+        data = request.get_json()
+        frequency = data.get('frequency')
+        
+        if not frequency:
+            return jsonify({
+                "status": "error", 
+                "message": "No se proporcionó el parámetro frequency."
+            }), 400
+            
+        try:
+            frequency_val = int(frequency)
+        except ValueError:
+            return jsonify({
+                "status": "error", 
+                "message": "La frecuencia debe ser un valor numérico válido."
+            }), 400
+
+        if os.path.exists(CONFIG_PATH):
+            with open(CONFIG_PATH, 'r') as f:
+                config_data = json.load(f)
+            
+            if "NEMA" not in config_data:
+                config_data["NEMA"] = {}
+                
+            config_data["NEMA"]["FREQUENCY"] = frequency_val
+            
+            with open(CONFIG_PATH, 'w') as f:
+                json.dump(config_data, f, indent=4)
+                
+            print(f"[CONFIG] Frecuencia actualizada con éxito: {frequency_val}")
+            return jsonify({
+                "status": "success",
+                "message": "Frecuencia actualizada correctamente.",
+                "frequency": frequency_val
+            })
+        else:
+            return jsonify({
+                "status": "error", 
+                "message": f"No se encontró el archivo en {CONFIG_PATH}"
+            }), 404
+            
+    except Exception as e:
+        return jsonify({
+            "status": "error", 
+            "message": f"Error interno al actualizar la frecuencia: {str(e)}"
+        }), 500
 
 @app.route('/api/scan/start', methods=['POST'])
 def start_scan():
@@ -155,6 +210,7 @@ def start_scan():
         with open(CONFIG_PATH, 'r') as f:
             config_data = json.load(f)
         wheel = config_data["LOCATION"]["WHEEL"]
+        frequency = config_data.get("NEMA", {}).get("FREQUENCY", 800)
         
         cameras = []
         for i in range(1, 5):
@@ -182,15 +238,19 @@ def start_scan():
         
         rx_serial.borrado_global()
         sleep(1)
-        
-        nema.mover_der()
+        rx_serial.start_global()
+        nema.mover_der(frequency)
+        rx_serial.stop_global()
+        sleep(1)
+        rx_serial.borrado_global()
+        sleep(1)
         rx_serial.start_global()
         for cam in cameras:
             try: 
                 cam.start_recording()
             except:
                 pass
-        nema.mover_izq()
+        nema.mover_izq(frequency)
         
         rx_serial.stop_global()
         for cam in cameras:

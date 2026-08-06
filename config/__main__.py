@@ -26,7 +26,7 @@ class Config(Utils):
                     "IP": "127.0.0.1",
                     "PORT": 20001
                 },
-                "AUROUPLOAD":{
+                "AUTOUPLOAD":{
                     "MINING":{
                         "ACTIVATED": 1,
                         "DATA": "",
@@ -35,12 +35,15 @@ class Config(Utils):
                 },
                 "LOCATION": {
                     "VEHICLE": "",
-                    "WHEEL": ""
+                    "WHEEL": "FL"
                 },
                 "SERIAL": {
                     "NUM_SENSOR": 50,
                     "ULTRASONIC": [0xE1, 0xE2],
                     "THRESHOLD": 20
+                },
+                "NEMA": {
+                    "FREQUENCY": 800
                 }
             }
             

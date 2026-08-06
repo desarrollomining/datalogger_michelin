@@ -36,7 +36,7 @@ def app():
         try:
             umbral = float(option)
             for i in sensores:
-                serial.configurar_umbral_float(i, umbral)
+                serial.enviar_config_distancia(i, umbral)
             config["SERIAL"]["THRESHOLD"] = umbral
             save_config(config)
             print(f"\nUmbral actualizado con éxito a {umbral} cm\n")

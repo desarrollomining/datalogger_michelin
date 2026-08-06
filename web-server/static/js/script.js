@@ -24,6 +24,17 @@ document.addEventListener('DOMContentLoaded', () => {
                         <small class="text-muted mt-1">Dejar vacío para usar el vehículo ya asignado en el título</small>
                     </div>
 
+                    <div class="card p-3 mb-3 shadow-sm border-start border-success border-4">
+                        <label for="input-frecuencia" class="form-label fw-bold text-success">Frecuencia del Motor (NEMA)</label>
+                        <div class="d-flex gap-2">
+                            <input type="number" id="input-frecuencia" class="form-control" placeholder="Ej: 800">
+                            <button id="btn-guardar-freq" class="btn btn-success px-4 shadow-sm">
+                                Guardar
+                            </button>
+                        </div>
+                        <small class="text-muted mt-1">Define la velocidad/frecuencia de movimiento del NEMA</small>
+                    </div>
+
                     <div class="card p-3 mb-3 shadow-sm text-center border-start border-secondary border-4">
                         <h5 class="card-title mb-3 fw-bold text-secondary text-start">2. Seleccione neumático a revisar</h5>
                         
@@ -91,6 +102,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const dbTimestamp = document.getElementById('db-timestamp');
     const heatmapCanvasContainer = document.getElementById('heatmap-canvas-container');
     const appMainTitle = document.getElementById('app-main-title');
+    const inputFrecuencia = document.getElementById('input-frecuencia');
+    const btnGuardarFreq = document.getElementById('btn-guardar-freq');
 
     async function loadInitialConfig() {
         try {
@@ -99,7 +112,10 @@ document.addEventListener('DOMContentLoaded', () => {
             if (data.status === "success" && data.vehicle) {
                 vehiculoSeleccionado = data.vehicle.toUpperCase();
                 posicionSeleccionada = data.position;
-                
+                if (data.frequency && inputFrecuencia) {
+                    inputFrecuencia.value = data.frequency;
+                }
+
                 actualizarTituloVehiculo();
                 updateTireButtonsUI();
                 fetchHeatmapData(); 
@@ -366,4 +382,31 @@ document.addEventListener('DOMContentLoaded', () => {
 
     updateTireButtonsUI();
     loadInitialConfig();
+});
+
+btnGuardarFreq.addEventListener('click', async () => {
+    const nuevaFrecuencia = inputFrecuencia.value.trim();
+
+    if (!nuevaFrecuencia) {
+        alert("Por favor, ingrese un valor de frecuencia válido.");
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/config/frequency', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ frequency: nuevaFrecuencia })
+        });
+        const data = await response.json();
+
+        if (data.status === "success") {
+            alert("¡Frecuencia guardada correctamente en el archivo de configuración!");
+        } else {
+            alert(`Error al guardar la frecuencia: ${data.message}`);
+        }
+    } catch (error) {
+        console.error("Error al conectar con la API de frecuencia:", error);
+        alert("No se pudo conectar con el servidor para guardar la frecuencia.");
+    }
 });

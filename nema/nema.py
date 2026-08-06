@@ -15,8 +15,6 @@ class Nema(Utils):
         self.serial_bus = serial_lib
         self.serial_bus.alert_callback = self.handle_alert
         
-        self.FRECUENCIA_MOTOR = 800
-        
         self.bloqueo_der = False
         self.bloqueo_izq = False
         
@@ -39,7 +37,7 @@ class Nema(Utils):
         lgpio.gpio_write(self.chip, self.STEP, 0)
         lgpio.gpio_write(self.chip, self.DIR, 0)
             
-    def set_motor(self, nuevo_estado):
+    def set_motor(self, nuevo_estado, frecuencia_motor = 800):
         if nuevo_estado == self.estado_motor:
             return
         self.estado_motor = nuevo_estado
@@ -47,11 +45,11 @@ class Nema(Utils):
         if nuevo_estado == "DER":
             lgpio.gpio_write(self.chip, self.DIR, 0)
             time.sleep(0.002)
-            lgpio.tx_pwm(self.chip, self.STEP, self.FRECUENCIA_MOTOR, 50)
+            lgpio.tx_pwm(self.chip, self.STEP, frecuencia_motor, 50)
         elif nuevo_estado == "IZQ":
             lgpio.gpio_write(self.chip, self.DIR, 1)
             time.sleep(0.002)
-            lgpio.tx_pwm(self.chip, self.STEP, self.FRECUENCIA_MOTOR, 50)
+            lgpio.tx_pwm(self.chip, self.STEP, frecuencia_motor, 50)
         else:
             lgpio.tx_pwm(self.chip, self.STEP, 100, 0)
             lgpio.gpio_write(self.chip, self.STEP, 0)
@@ -95,26 +93,26 @@ class Nema(Utils):
 
             time.sleep(0.1)
     
-    def mover_der(self):
+    def mover_der(self, frecuencia_motor=800):
         self.log("Iniciando movimiento automático a la DERECHA...")
         if self.bloqueo_der:
             self.log("No se puede iniciar movimiento a la derecha. El sensor derecho ya está bloqueado")
             return
 
-        self.set_motor("DER")
+        self.set_motor("DER", frecuencia_motor)
         while not self.bloqueo_der and not self.salir:
             time.sleep(0.01)
         
         self.set_motor("STOP")
         self.log("Movimiento a la DERECHA finalizado por detección de obstáculo o límite.")
 
-    def mover_izq(self):
+    def mover_izq(self, frecuencia_motor=800): 
         self.log("Iniciando movimiento automático a la IZQUIERDA...")
         if self.bloqueo_izq:
             self.log("No se puede iniciar movimiento a la izquierda. El sensor izquierdo ya está bloqueado.")
             return
 
-        self.set_motor("IZQ")
+        self.set_motor("IZQ", frecuencia_motor)
         while not self.bloqueo_izq and not self.salir:
             time.sleep(0.01)
         

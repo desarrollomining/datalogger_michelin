@@ -15,7 +15,7 @@ from database.models import Database
 CONFIG_PATH = "/srv/datalogger_michelin/config_michelin.json"
 
 class Server(Utils):
-    def __init__(self, ip, port,log_id="SERVER"):
+    def __init__(self, ip, port, log_id="SERVER"):
         self.log_id = log_id
 
         self.local_ip = ip
@@ -119,7 +119,7 @@ class Server(Utils):
                 df_processed[col] = self.moving_average(df_processed[col].values, window_size)
 
             processed_json_str = json.dumps(df_processed.to_dict(orient='records'))
-            self.database.insert_processed_data(processed_json_str, self.vehicle, self.wheel)
+            self.database.insert_processed_data(processed_json_str, vehicle, wheel)
 
             self.log(f"Matriz procesada y guardada con éxito en DB (Filas: {df_processed.shape[0]})")
 
@@ -145,6 +145,4 @@ if __name__ == "__main__":
     Server(
         ip=config["SERVER"]["IP"],
         port=config["SERVER"]["PORT"],
-        vehicle=config["LOCATION"]["VEHICLE"],
-        wheel=config["LOCATION"]["WHEEL"]
     )
